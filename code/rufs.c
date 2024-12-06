@@ -24,7 +24,13 @@
 
 char diskfile_path[PATH_MAX];
 
+#define SUPERBLOCK_NUM 0
+
 // Declare your in-memory data structures here
+
+bitmap_t* inode_bmap;
+bitmap_t* data_bmap;
+struct superblock* superblk;
 
 /* 
  * Get available inode number from bitmap
@@ -37,7 +43,19 @@ int get_avail_ino() {
 
 	// Step 3: Update inode bitmap and write to disk 
 
-	return 0;
+	// Reread in case of issues
+	bio_read(superblk->i_bitmap_blk, inode_bmap);
+
+	for(int i = 0; i < BLOCK_SIZE; i++) {
+		if(get_bitmap(inode_bmap, i) == 0) {
+			set_bitmap(inode_bmap, i);
+			bio_write(superblk->i_bitmap_blk, inode_bmap);
+			return i;
+		}
+	}
+
+	// Not found
+	return -1;
 }
 
 /* 
@@ -51,7 +69,19 @@ int get_avail_blkno() {
 
 	// Step 3: Update data block bitmap and write to disk 
 
-	return 0;
+	// Reread in case of issues
+	bio_read(superblk->d_bitmap_blk, data_bmap);
+
+	for(int i = 0; i < MAX_DNUM; i++) {
+		if(get_bitmap(data_bmap, i) == 0) {
+			set_bitmap(data_bmap, i);
+			bio_write(superblk->i_bitmap_blk, data_bmap);
+			return i;
+		}
+	}
+
+	// Not found
+	return -1;
 }
 
 /* 
@@ -65,6 +95,25 @@ int readi(uint16_t ino, struct inode *inode) {
 
   // Step 3: Read the block from disk and then copy into inode structure
 
+	// Find the block of the inode
+	int block_no = ino / 16;
+	// Offset is the number of inodes, multiply by the size of each inode.
+	int offset = ino % 16;
+	block_no += superblk->i_start_blk;
+
+	// WE CAN GO BYTE FOR BYTE
+	char *block = malloc(BLOCK_SIZE);
+
+	if(bio_read(block_no, block) < 0) {
+		printf("Read Error within readi");
+		return -1;
+	}
+
+	struct inode *ptr_to_inode = *block + (offset * sizeof(inode));
+
+	memcpy(inode, ptr_to_inode, sizeof(inode));
+
+	free(block);
 	return 0;
 }
 
@@ -75,6 +124,31 @@ int writei(uint16_t ino, struct inode *inode) {
 	// Step 2: Get the offset in the block where this inode resides on disk
 
 	// Step 3: Write inode to disk 
+
+	// Find the block of the inode
+	int block_no = ino / 16;
+	block_no += superblk->i_start_blk;
+
+	// Offset is the number of inodes, multiply by the size of each inode.
+	int offset = ino % 16;
+
+	// WE CAN GO BYTE FOR BYTE
+	char *block = malloc(BLOCK_SIZE);
+
+	if(bio_read(block_no, block) < 0) {
+		printf("Read Error within writei");
+		return -1;
+	}
+
+	struct inode *ptr_to_inode = *block + (offset * sizeof(inode));
+
+	// Copy the inode to the place where it belongs in the block
+	memcpy(ptr_to_inode, inode, sizeof(inode));
+
+	// Write the entire block back to the disk.
+	bio_write(block_no, block);
+
+	free(block);
 
 	return 0;
 }
@@ -151,6 +225,75 @@ int rufs_mkfs() {
 
 	// update inode for root directory
 
+	struct inode root_ino;
+	struct dirent root_dir;
+
+
+	dev_init(diskfile_path);
+
+
+	// Create the superblock
+	superblk = malloc(BLOCK_SIZE);
+
+	*superblk = (struct superblock) {
+		.magic_num = MAGIC_NUM,
+		.max_inum = MAX_INUM,
+		.max_dnum = MAX_DNUM,
+		.i_bitmap_blk = 1,
+		.d_bitmap_blk = 2,
+		.i_start_blk = 3,
+		.d_start_blk = 3 + (sizeof(struct inode) * MAX_INUM / BLOCK_SIZE)
+	};
+
+	// Write to disk
+	bio_write(SUPERBLOCK_NUM, superblk);
+
+	// Create bmaps
+	inode_bmap = calloc(1, BLOCK_SIZE);
+	data_bmap = calloc(1, BLOCK_SIZE);
+
+	// Write bmaps
+	bio_write(superblk->i_bitmap_blk, inode_bmap);
+	bio_write(superblk->i_bitmap_blk, data_bmap);
+
+	int root_ino_num = get_avail_ino();
+	if(root_ino_num == -1) {
+		printf("Error setting root inode, no available inode number");
+		return -1;
+	}
+
+	// Set the bmap for the root directory.
+	root_ino = (struct inode) {
+		.ino = root_ino_num,
+		.valid = 1,
+		.size = 0,
+		.type = 1,
+		.direct_ptr[0] = superblk->d_start_blk
+	};
+
+	// Write the root inode to the inode block
+	bio_write(superblk->i_start_blk, &root_ino);
+
+	// int root_blk_num = get_avail_blkno();
+	// if(root_blk_num == -1) {
+	// 	printf("Error setting root inode, no available block number");
+	// 	return -1;
+	// }
+
+	// // Set the directory entry for the root
+	// root_dir = (struct dirent) {
+	// 	.name = '/',
+	// 	.len  = 1,
+	// 	.ino = root_blk_num,
+	// 	.valid = 1
+	// };
+
+	// bio_write(superblk->d_start_blk, &root_dir);
+
+	// // Rewrite the direct path of the root dir, just in case
+	// root_ino.direct_ptr[0] = root_blk_num;
+	// bio_write(superblk->i_start_blk, &root_ino);
+
 	return 0;
 }
 
@@ -164,6 +307,34 @@ static void *rufs_init(struct fuse_conn_info *conn) {
 
   // Step 1b: If disk file is found, just initialize in-memory data structures
   // and read superblock from disk
+
+	// Open doesnt find it
+	if(dev_open(diskfile_path) < 0) {
+		rufs_mkfs();
+		return NULL;
+	}
+
+	// Based on the slide organization?
+	inode_bmap = malloc(BLOCK_SIZE);
+	data_bmap = malloc(BLOCK_SIZE);
+	superblk = malloc(BLOCK_SIZE);
+
+	// Read each block into the data structures
+	if(bio_read(SUPERBLOCK_NUM, superblk) < 0) {
+		printf("File Read Error: Superblock");
+		return NULL;
+	}
+
+	if(bio_read(superblk->i_bitmap_blk, inode_bmap) < 0) {
+		printf("File Read Error: Inode Bmap Block");
+		return NULL;
+	}
+
+	if(bio_read(superblk->d_start_blk, data_bmap) < 0) {
+		printf("File Read Error: Data Bmap Block");
+		return NULL;
+	}
+
 
 	return NULL;
 }
