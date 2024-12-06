@@ -166,6 +166,47 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
   // Step 3: Read directory's data block and check each directory entry.
   //If the name matches, then copy directory entry to dirent structure
 
+  // Notes: Use strcmp()
+	struct inode *dir_inode = malloc(sizeof(struct inode));
+
+	if(readi(ino, dir_inode) < 0) {
+		printf("Error finding inode inside dir_find");
+		return -1;
+	}
+
+	// Get data block of current directory
+	struct dirent *curr_dir_block = malloc(BLOCK_SIZE);
+	// read through direct pointers?
+	for(int ptr = 0; ptr < 16; ptr++) {
+		
+		// Dont exist
+		if(!dir_inode->direct_ptr[ptr]) {
+			free(dir_inode);
+			return 0;
+		}
+
+		if(bio_read(dir_inode->direct_ptr[ptr], curr_dir_block) < 0) {
+			printf("Error reading from disk within dir_find");
+			free(dir_inode);
+			return -1;
+		}
+
+		// Now I should have the data block. Read thru the whole thing for dir entries
+		struct dirent *dir_ptr = curr_dir_block;
+		for(int i = 0; i < (BLOCK_SIZE / sizeof(struct dirent)); i++, dir_ptr++) {
+			if(!dir_ptr->valid) continue;
+			else if(strcmp(dir_ptr->name, fname) == 0) {
+				memcpy(dirent,dir_ptr, sizeof(struct dirent));
+				free(curr_dir_block);
+				free(dir_inode);
+				return 1;
+			}
+		}
+
+	}
+
+	free(curr_dir_block);
+	free(dir_inode);
 	return 0;
 }
 
@@ -183,6 +224,89 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 
 	// Write directory entry
 
+	// Dont exist
+	if(!dir_inode.direct_ptr[0]) {
+		// Create a data block entry.
+		int new_data_block = get_avail_blkno();
+		dir_inode.direct_ptr[0] = new_data_block;
+		writei(dir_inode.ino, &dir_inode);
+
+		// Add the entry.
+		struct dirent* new_dir = malloc(BLOCK_SIZE);
+
+		new_dir[0] = (struct dirent) {
+			.ino = f_ino,
+			.valid = 1,
+			.len = (uint16_t) strlen(fname)
+		};
+		strcpy(new_dir[0].name, fname);
+
+		
+		if(bio_write(new_data_block, new_dir) < 0) {
+			printf("error writing to file from dir_add");
+			free(new_dir);
+			return -1;
+		}
+		free(new_dir);
+		return 0;
+	}
+
+	// There are data blocks alr...
+	// First try and find it...
+	struct dirent searching_dir;
+	if(dir_find(dir_inode.ino, fname, name_len, &searching_dir) == 1) {
+		printf("File name already exists");
+		return -1;
+	}
+
+	struct dirent *curr_dir_block = malloc(BLOCK_SIZE);
+	// read through direct pointers?
+	for(int ptr = 0; ptr < 16; ptr++) {
+		
+		if(bio_read(dir_inode.direct_ptr[ptr], curr_dir_block) < 0) {
+			printf("Error reading from disk within dir_add");
+			free(curr_dir_block);
+			return -1;
+		}
+
+		// Now I should have the data block. Read thru the whole thing for dir entries
+		struct dirent *dir_ptr = curr_dir_block;
+		for(int i = 0; i < (BLOCK_SIZE / sizeof(struct dirent)); i++, dir_ptr++) {
+			// Find a place i can insert. REMINDER that because i am searching for a invalid entry to insert into, i need to invalidate entries
+			if(dir_ptr->valid) continue;
+			else {
+				// Add the entry.
+				*dir_ptr = (struct dirent) {
+					.ino = f_ino,
+					.valid = 1,
+					.len = (uint16_t) strlen(fname)
+				};
+
+				strcpy(dir_ptr->name, fname);
+
+				// More stats I need to add to this for sure
+				dir_inode.size += sizeof(struct dirent);
+
+				if(writei(dir_inode.ino, &dir_inode) < 0) {
+					printf("error writing to file from dir_add");
+					free(curr_dir_block);
+
+					return -1;
+				}
+
+				// Write the new block with the new directory to the disk
+				if(bio_write(dir_inode.direct_ptr[ptr], curr_dir_block) < 0) {
+					printf("Write error inside dir_add");
+					free(curr_dir_block);
+					return -1;
+				}
+				free(curr_dir_block);
+				return 0;
+			}
+		}
+
+	}
+	free(curr_dir_block);
 	return 0;
 }
 
