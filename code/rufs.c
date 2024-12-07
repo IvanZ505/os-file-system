@@ -329,6 +329,33 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
 
+	// https://stackoverflow.com/questions/9210528/split-string-with-delimiters-in-c
+	// Use strtok?
+	char *path_cpy = strdup(path);
+
+	// char* token = strtok(path_cpy, '/');
+
+	char *token, *str, *str_cpy;
+
+	str_cpy = str = strdup(path);
+
+	struct dirent temp_dir;
+	temp_dir.ino = 0; // Root
+	while ((token = strsep(&str, "/"))) {
+		if(dir_find(temp_dir.ino, token, strlen(token), &temp_dir) < 0) {
+			free(str_cpy);
+			return -1;
+		}
+	}
+	// It should have found it by now
+	if(temp_dir.valid) {
+		if(readi(temp_dir.ino, inode) < 0) {
+			printf("error reading inode block inside get_node_by_path");
+			return -1;
+		}
+	}
+
+	free(str_cpy);
 	return 0;
 }
 
@@ -468,6 +495,10 @@ static void rufs_destroy(void *userdata) {
 	// Step 1: De-allocate in-memory data structures
 
 	// Step 2: Close diskfile
+	free(superblk);
+	free(data_bmap);
+	free(inode_bmap);
+	dev_close();
 
 }
 
