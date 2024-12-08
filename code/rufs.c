@@ -521,7 +521,10 @@ static int rufs_opendir(const char *path, struct fuse_file_info *fi) {
 
 	// Step 2: If not find, return -1
 
-    return 0;
+	struct inode dir;
+
+	int ret = get_node_by_path(path, 0, &dir);
+	return ret;
 }
 
 static int rufs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
@@ -530,6 +533,40 @@ static int rufs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
 
 	// Step 2: Read directory entries from its data blocks, and copy them to filler
 
+	struct inode dir;
+
+	if(get_node_by_path(path, 0, &dir) < 0)  {
+		printf("Error getting directory, you sure it exists?");
+		return -1;
+	}
+
+	// Retrieve the data blocks the inode points to
+	struct dirent* dir_inode_block = malloc(BLOCK_SIZE);
+	for(int i = 0; i < 16; i++) {
+		if(!dir.direct_ptr[i]) break;
+
+		if(bio_read(dir.direct_ptr[i], dir_inode_block) < 0) {
+			printf("Read error from disk from the direct pointer.");
+			free(dir_inode_block);
+			return -1;
+		}
+
+		// Copy each part.
+		struct dirent* dir_ptr = dir_inode_block;
+		for(int j = 0; j < (BLOCK_SIZE / sizeof(struct dirent)); j++, dir_ptr++) {
+			if(dir_ptr->valid) {
+				struct inode item_node;
+				if(readi(dir_ptr->ino, &item_node) < 0) {
+					printf("Error reading inode data inside readdir");
+					return -1;
+				}
+
+				filler(buffer, dir_ptr->name, &item_node.vstat, 0);
+			}
+		}
+		
+	}
+	free(dir_inode_block);
 	return 0;
 }
 
@@ -547,11 +584,12 @@ static int rufs_mkdir(const char *path, mode_t mode) {
 	// Step 5: Update inode for target directory
 
 	// Step 6: Call writei() to write inode to disk
-	
+	dirname(path);
 
 	return 0;
 }
 
+// Skip
 static int rufs_rmdir(const char *path) {
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
@@ -626,6 +664,7 @@ static int rufs_write(const char *path, const char *buffer, size_t size, off_t o
 	return size;
 }
 
+// Skip
 static int rufs_unlink(const char *path) {
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target file name
