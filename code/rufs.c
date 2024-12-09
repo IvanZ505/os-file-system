@@ -28,8 +28,8 @@ char diskfile_path[PATH_MAX];
 
 // Declare your in-memory data structures here
 
-bitmap_t* inode_bmap;
-bitmap_t* data_bmap;
+bitmap_t inode_bmap;
+bitmap_t data_bmap;
 struct superblock* superblk;
 
 /* 
@@ -102,16 +102,17 @@ int readi(uint16_t ino, struct inode *inode) {
 	block_no += superblk->i_start_blk;
 
 	// WE CAN GO BYTE FOR BYTE
-	char *block = malloc(BLOCK_SIZE);
+	struct inode *block = malloc(BLOCK_SIZE);
 
 	if(bio_read(block_no, block) < 0) {
 		printf("Read Error within readi");
 		return -1;
 	}
 
-	struct inode *ptr_to_inode = *block + (offset * sizeof(inode));
+	// struct inode *ptr_to_inode = *block + (offset * sizeof(inode));
+	struct inode *ptr_to_inode = &block[offset];
 
-	memcpy(inode, ptr_to_inode, sizeof(inode));
+	memcpy(inode, ptr_to_inode, sizeof(struct inode));
 
 	free(block);
 	return 0;
@@ -133,17 +134,19 @@ int writei(uint16_t ino, struct inode *inode) {
 	int offset = ino % 16;
 
 	// WE CAN GO BYTE FOR BYTE
-	char *block = malloc(BLOCK_SIZE);
+	struct inode *block = malloc(BLOCK_SIZE);
 
 	if(bio_read(block_no, block) < 0) {
 		printf("Read Error within writei");
 		return -1;
 	}
 
-	struct inode *ptr_to_inode = *block + (offset * sizeof(inode));
+	// struct inode *ptr_to_inode = *block + (offset * sizeof(inode));
+	struct inode *ptr_to_inode = &block[offset];
+
 
 	// Copy the inode to the place where it belongs in the block
-	memcpy(ptr_to_inode, inode, sizeof(inode));
+	memcpy(ptr_to_inode, inode, sizeof(struct inode));
 
 	// Write the entire block back to the disk.
 	bio_write(block_no, block);
@@ -331,7 +334,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 
 	// https://stackoverflow.com/questions/9210528/split-string-with-delimiters-in-c
 	// Use strtok?
-	char *path_cpy = strdup(path);
+	// char *path_cpy = strdup(path);
 
 	// char* token = strtok(path_cpy, '/');
 
@@ -377,7 +380,7 @@ int rufs_mkfs() {
 	// update inode for root directory
 
 	struct inode root_ino;
-	struct dirent root_dir;
+	// struct dirent root_dir;
 
 
 	dev_init(diskfile_path);
@@ -584,9 +587,53 @@ static int rufs_mkdir(const char *path, mode_t mode) {
 	// Step 5: Update inode for target directory
 
 	// Step 6: Call writei() to write inode to disk
-	dirname(path);
+	char* stripped = strdup(path);
+	char* basen = strdup(path);
+	char* dir = dirname(stripped);
+	char* basenm = basename(basen);
 
-	return 0;
+	printf("Dirname: %s, Basename: %s\n", dir, basenm);
+
+	struct inode par_inode;
+	if(get_node_by_path(dir, 0, &par_inode) == -1) {
+		printf("Error getting parent inode");
+		free(dir);
+		free(stripped);
+		return -1;
+	}
+
+	printf("This is the parent node: #: %u", par_inode.ino);
+
+	struct dirent temp_dir;
+	dir_find(par_inode.ino, basenm, strlen(basenm), &temp_dir);
+
+	if(temp_dir.valid) {
+		return -1;
+	}
+
+	int new_dir_ino_num = get_avail_ino();
+
+	if(dir_add(par_inode, new_dir_ino_num, basenm, strlen(basenm)) < 0) {
+		printf("error adding directory entry");
+		free(dir);
+		free(stripped);
+		return 0;
+	}
+
+	struct inode dir_inode;
+	dir_inode = (struct inode) {
+		.ino = new_dir_ino_num,
+		.valid = 1,
+		.type = 1,
+		.size = 0,
+		.direct_ptr[0] = get_avail_blkno()	// Reserve the space
+	};
+
+	writei(new_dir_ino_num, &dir_inode);
+
+	free(dir);
+	free(stripped);
+	return 1;
 }
 
 // Skip
