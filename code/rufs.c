@@ -801,7 +801,10 @@ static int rufs_open(const char *path, struct fuse_file_info *fi) {
 
 	// Step 2: If not find, return -1
 
-	return 0;
+	struct inode file_inode;
+
+	int i = get_node_by_path(path, 0, &file_inode);
+	return (i < 0) ? -1 : 0;
 }
 
 static int rufs_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
