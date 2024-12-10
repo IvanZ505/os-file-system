@@ -354,6 +354,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	return 0;
 }
 
+// Skip
 int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 
 	// Step 1: Read dir_inode's data block and checks each directory entry of dir_inode
@@ -700,7 +701,7 @@ static int rufs_mkdir(const char *path, mode_t mode) {
 		.direct_ptr[0] = get_avail_blkno()	// Reserve the space
 	};
 
-	printf("New Directory Inode made with # %u\n", dir_inode.ino);
+	printf("New Directory Inode made with # %u with direct pointer at: %u\n", dir_inode.ino, dir_inode.direct_ptr[0]);
 
 	writei(new_dir_ino_num, &dir_inode);
 
@@ -723,6 +724,7 @@ static int rufs_rmdir(const char *path) {
 	// Step 5: Call get_node_by_path() to get inode of parent directory
 
 	// Step 6: Call dir_remove() to remove directory entry of target directory in its parent directory
+
 
 	return 0;
 }
@@ -747,6 +749,49 @@ static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 
 	// Step 6: Call writei() to write inode to disk
 
+		char* stripped = strdup(path);
+	char* basen = strdup(path);
+	char* dir = dirname(stripped);
+	char* basenm = basename(basen);
+
+	printf("Dirname: %s, Basename: %s\n", dir, basenm);
+
+	struct inode par_inode;
+	int erro_code = get_node_by_path(dir, 0, &par_inode);
+	if(erro_code < 0) {
+		printf("Error getting parent inode");
+		free(dir);
+		free(basen);
+		return erro_code;
+	}
+
+
+	printf("This is the parent node: #: %u\n", par_inode.ino);
+
+	int new_dir_ino_num = get_avail_ino();
+	int error_no;
+	if((error_no = dir_add(par_inode, new_dir_ino_num, basenm, strlen(basenm))) < 0) {
+		printf("error adding directory entry");
+		free(dir);
+		free(basen);
+		return error_no;
+	}
+
+	struct inode dir_inode;
+	dir_inode = (struct inode) {
+		.ino = new_dir_ino_num,
+		.valid = 1,
+		.type = 2,
+		.size = 0,
+		.direct_ptr[0] = get_avail_blkno()	// Reserve the space
+	};
+
+	printf("New Directory Inode made with # %u with direct pointer at: %u\n", dir_inode.ino, dir_inode.direct_ptr[0]);
+
+	writei(new_dir_ino_num, &dir_inode);
+
+	free(dir);
+	free(basen);
 	return 0;
 }
 
