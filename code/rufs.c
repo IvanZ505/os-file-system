@@ -26,6 +26,8 @@ char diskfile_path[PATH_MAX];
 
 #define SUPERBLOCK_NUM 0
 
+#define INO_FACTOR (BLOCK_SIZE / 256)
+
 // Declare your in-memory data structures here
 
 bitmap_t inode_bmap;
@@ -99,9 +101,9 @@ int readi(uint16_t ino, struct inode *inode) {
   // Step 3: Read the block from disk and then copy into inode structure
 
 	// Find the block of the inode
-	int block_no = ino / 16;
+	int block_no = ino / INO_FACTOR;
 	// Offset is the number of inodes, multiply by the size of each inode.
-	int offset = ino % 16;
+	int offset = ino % INO_FACTOR;
 	block_no += superblk->i_start_blk;
 
 	// WE CAN GO BYTE FOR BYTE
@@ -136,11 +138,11 @@ int writei(uint16_t ino, struct inode *inode) {
 	// Step 3: Write inode to disk 
 
 	// Find the block of the inode
-	int block_no = ino / 16;
+	int block_no = ino / INO_FACTOR;
 	block_no += superblk->i_start_blk;
 
 	// Offset is the number of inodes, multiply by the size of each inode.
-	int offset = ino % 16;
+	int offset = ino % INO_FACTOR;
 
 	// WE CAN GO BYTE FOR BYTE
 	struct inode *block = malloc(BLOCK_SIZE);
@@ -232,7 +234,7 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 		// Now I should have the data block. Read thru the whole thing for dir entries
 		struct dirent *dir_ptr = curr_dir_block;
 		for(int i = 0; i < (BLOCK_SIZE / sizeof(struct dirent)); i++, dir_ptr++) {
-			printf("Currently director is called: %s\n", dir_ptr->name);
+			// printf("Currently director is called: %s\n", dir_ptr->name);
 			if(!dir_ptr->valid) continue;
 			else if(strcmp(dir_ptr->name, token) == 0) {
 				memcpy(dirent,dir_ptr, sizeof(struct dirent));
@@ -339,6 +341,23 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 
 	struct dirent *curr_dir_block = malloc(BLOCK_SIZE);
 
+	// expand dirent data blocks if needed
+	int max_links = (dir_inode.size/BLOCK_SIZE)*(BLOCK_SIZE/sizeof(struct dirent)) + 2;
+
+	int dir_links = dir_inode.link;
+	printf("max_links %d, dir_links %d\n", max_links, dir_links);
+	if (max_links <= dir_links) {
+		// resize needed, add one block
+		int i = dir_inode.size / BLOCK_SIZE;
+		printf("index to get worked %d\n", i);
+
+		dir_inode.direct_ptr[i] = get_avail_blkno();
+		dir_inode.size += BLOCK_SIZE;
+		dir_inode.vstat.st_size += BLOCK_SIZE;
+	}
+
+	writei(dir_inode.ino, &dir_inode);
+
 	// read through direct pointers
 	int end = dir_inode.size / BLOCK_SIZE;
 	for(int ptr = 0; ptr < end; ptr++) {
@@ -353,8 +372,10 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 		struct dirent *dir_ptr = curr_dir_block;
 		for(int i = 0; i < (BLOCK_SIZE / sizeof(struct dirent)); i++, dir_ptr++) {
 			// Find a place i can insert. REMINDER that because i am searching for a invalid entry to insert into, i need to invalidate entries
-			if(dir_ptr->valid) continue;
-			else {
+			if(dir_ptr->valid) {
+				printf("index i = %d\n", i);
+				continue;
+			} else {
 				// Add the entry.
 				printf("Found an entry at block offset %d\n", i);
 
@@ -367,9 +388,6 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 				strcpy(dir_ptr->name, fname);
 
 				printf("Wrote directory entry %s to offset %d\n", dir_ptr->name, i);
-
-				// More stats I need to add to this for sure
-				dir_inode.size += sizeof(struct dirent);
 
 				if(writei(dir_inode.ino, &dir_inode) < 0) {
 					printf("error writing to file from dir_add");
@@ -387,6 +405,8 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 
 				dir_inode.link += 1;
 				dir_inode.vstat.st_nlink += 1;
+
+				writei(dir_inode.ino, &dir_inode);
 				free(curr_dir_block);
 				return 0;
 			}
@@ -394,6 +414,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 
 	}
 
+	printf("here\n");
 	free(curr_dir_block);
 	return -EIO;
 }
@@ -799,14 +820,19 @@ static int rufs_mkdir(const char *path, mode_t mode) {
 
 	printf("New Directory Inode made with # %u with direct pointer at: %u\n", dir_inode.ino, dir_inode.direct_ptr[0]);
 
+	printf("please\n");
 	writei(new_dir_ino_num, &dir_inode);
 	// Accounts for "." and ".."
 	// bio_write(dir_inode.direct_ptr[0], ...);
 	// bio_write(dir_inode.direct_ptr[1], ...);
 
+	printf("please\n");
 	free(par_inode);
+	printf("please\n");
 	free(dir);
+	printf("please\n");
 	free(basen);
+	printf("please\n");
 	return 0;
 }
 
@@ -926,6 +952,10 @@ static int rufs_open(const char *path, struct fuse_file_info *fi) {
 }
 
 static int rufs_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
+	if (size <= 0) {
+		printf("bad read size\n");
+		return -1;
+	}
 
 	// Step 1: You could call get_node_by_path() to get inode from path
 
@@ -934,7 +964,66 @@ static int rufs_read(const char *path, char *buffer, size_t size, off_t offset, 
 	// Step 3: copy the correct amount of data from offset to buffer
 
 	// Note: this function should return the amount of bytes you copied to buffer
-	return 0;
+
+	struct inode* file = malloc(sizeof(struct inode));
+
+	printf("Reading file\n");
+
+	if(get_node_by_path(path, 0, file) < 0)  {
+		printf("Error getting directory, you sure it exists?\n");
+		free(file);
+		return -ENOENT;
+	}
+
+	// calculate which block to start reading from
+	// calculate which block to start reading from
+	int start_block = offset / BLOCK_SIZE;
+	int end_block = ((offset + size) - 1) / BLOCK_SIZE;
+
+	if (offset >= BLOCK_SIZE) {
+		offset -= (start_block)*BLOCK_SIZE;
+	}
+
+	// Retrieve the data blocks the inode points to
+	uint8_t* file_block = malloc(BLOCK_SIZE);
+
+	int bytes_copied = 0;
+	for(int i = start_block; i < end_block+1 && bytes_copied < size; i++) {
+		if(!file->direct_ptr[i]) break;
+
+		if(bio_read(file->direct_ptr[i], file_block) < 0) {
+			printf("Read error from disk from the direct pointer.");
+			free(file);
+			free(file_block);
+			return -ENOENT;
+		}
+
+		uint8_t* ptr = file_block;
+
+		int bytes_to_copy = 0;
+
+		if ((size-bytes_copied) >= BLOCK_SIZE) {
+			bytes_to_copy = BLOCK_SIZE-offset;
+		} else {
+			bytes_to_copy = size-bytes_copied;
+		}
+
+		ptr += offset;
+
+		memcpy(buffer, ptr, bytes_to_copy);
+		buffer += bytes_to_copy;
+
+		bytes_copied += bytes_to_copy;
+
+		if (i == start_block && offset != 0) {
+			offset = 0;
+		}
+	}
+
+	free(file);
+	free(file_block);
+
+	return bytes_copied;
 }
 
 static int rufs_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
@@ -947,7 +1036,96 @@ static int rufs_write(const char *path, const char *buffer, size_t size, off_t o
 	// Step 4: Update the inode info and write it to disk
 
 	// Note: this function should return the amount of bytes you write to disk
-	return size;
+	struct inode* file = malloc(sizeof(struct inode));
+
+	printf("Writing to file\n");
+	printf("size:  %d, offset %d, path: %s\n", size, offset,path);
+
+	if(get_node_by_path(path, 0, file) < 0)  {
+		printf("Error getting directory, you sure it exists?\n");
+		free(file);
+		return -ENOENT;
+	}
+
+	// calculate which block to start reading from
+	int start_block = offset / BLOCK_SIZE;
+	int end_block = ((offset + size) - 1) / BLOCK_SIZE;
+
+	if (offset >= BLOCK_SIZE) {
+		offset -= (start_block)*BLOCK_SIZE;
+	}
+
+	if (end_block >= 16) {
+		printf("write too large, over direct_ptr capacity\n");
+		return -EIO;
+	}
+
+	// expand data blocks if needed
+	int block_num = file->size / BLOCK_SIZE;
+	if (block_num < (end_block+1)) {
+		int blocks_needed = (end_block+1)-block_num;
+		for (int i = block_num; i < blocks_needed+block_num; i++) {
+			file->direct_ptr[i] = get_avail_blkno();
+			file->size += BLOCK_SIZE;
+			file->vstat.st_size += BLOCK_SIZE;
+		}
+	}
+
+	writei(file->ino, file);
+
+
+
+	// Retrieve the data blocks the inode points to
+	uint8_t* file_block = malloc(BLOCK_SIZE);
+
+
+	int bytes_copied = 0;
+	for(int i = start_block; i < end_block+1 && bytes_copied < size; i++) {
+		if(!file->direct_ptr[i]) break;
+		printf("index: %d\nbytes_copied: %d \nsize: %d\noffset %d\n", i, bytes_copied, size, offset);
+
+		if(bio_read(file->direct_ptr[i], file_block) < 0) {
+			printf("Read error from disk from the direct pointer.");
+			free(file);
+			free(file_block);
+			return -ENOENT;
+		}
+
+		uint8_t* ptr = file_block;
+
+		int bytes_to_copy = 0;
+
+		if ((size-bytes_copied) >= BLOCK_SIZE) {
+			bytes_to_copy = BLOCK_SIZE-offset;
+		} else {
+			bytes_to_copy = size-bytes_copied;
+		}
+
+		ptr += offset;
+
+		memcpy(ptr, buffer, bytes_to_copy);
+		buffer += bytes_to_copy;
+
+		if(bio_write(file->direct_ptr[i], file_block) < 0) {
+			printf("Write error from disk from the direct pointer.");
+			free(file);
+			free(file_block);
+			return -ENOENT;
+		}
+
+		bytes_copied += bytes_to_copy;
+
+		if (i == start_block && offset != 0) {
+			offset = 0;
+		}
+
+	}
+
+	free(file);
+	free(file_block);
+
+	printf("what we return from write %d\n", bytes_copied);
+	return bytes_copied;
 }
 
 // Skip

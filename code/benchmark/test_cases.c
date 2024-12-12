@@ -76,7 +76,6 @@ int main(int argc, char **argv) {
 			printf("TEST 4: File read failure \n");
 			exit(1);
 		}
-		//printf("buf %s \n", buf);
 	}
         
 	if (pread(fd, buf, BLOCKSIZE, 2*BLOCKSIZE) != BLOCKSIZE) {
