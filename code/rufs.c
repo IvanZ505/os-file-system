@@ -300,6 +300,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 		dir_inode.direct_ptr[i] = get_avail_blkno();
 		dir_inode.size += BLOCK_SIZE;
 		dir_inode.vstat.st_size += BLOCK_SIZE;
+		dir_inode.vstat.st_mtime = time(NULL);
 	}
 
 	writei(dir_inode.ino, &dir_inode);
@@ -594,6 +595,10 @@ static int rufs_opendir(const char *path, struct fuse_file_info *fi) {
 	int ret = get_node_by_path(path, 0, dir);
 
 	free(dir);
+	
+	if (ret != 0) {
+		return -1;
+	}
 	return ret;
 }
 
@@ -848,6 +853,8 @@ static int rufs_read(const char *path, char *buffer, size_t size, off_t offset, 
 		return -ENOENT;
 	}
 
+	file->vstat.st_atime = time(NULL);
+
 	// calculate which block to start reading from
 	// calculate which block to start reading from
 	int start_block = offset / BLOCK_SIZE;
@@ -938,6 +945,7 @@ static int rufs_write(const char *path, const char *buffer, size_t size, off_t o
 			file->direct_ptr[i] = get_avail_blkno();
 			file->size += BLOCK_SIZE;
 			file->vstat.st_size += BLOCK_SIZE;
+			file->vstat.st_mtime = time(NULL);
 		}
 	}
 
